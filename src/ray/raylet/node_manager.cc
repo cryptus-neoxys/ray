@@ -292,6 +292,21 @@ NodeManager::NodeManager(
       socket_(std::move(socket)) {
   RAY_LOG(INFO).WithField(kLogKeyNodeID, self_node_id_) << "Initializing NodeManager";
 
+  // Record an explicit 0 for the eviction types with fixed labels so each
+  // series exists before the first eviction (#47616): Prometheus's rate() does
+  // not count a counter's first increase when the series has no earlier
+  // sample. Task and actor evictions are labeled with the task name, which is
+  // not known at startup, so those series cannot be initialized here. A single
+  // record is enough because counter series persist once created. Skipped when
+  // OpenTelemetry is disabled because the legacy opencensus aggregation for
+  // Count metrics counts recordings, not values.
+  if (::RayConfig::instance().enable_open_telemetry()) {
+    memory_manager_worker_eviction_total_count_.Record(
+        0, {{"Type", "MemoryManager.DriverEviction.Total"}, {"Name", "Driver"}});
+    memory_manager_worker_eviction_total_count_.Record(
+        0, {{"Type", "MemoryManager.IdleWorkerEviction.Total"}, {"Name", "Idle Worker"}});
+  }
+
   periodical_runner_->RunFnPeriodically(
       [this]() { cluster_lease_manager_.ScheduleAndGrantLeases(); },
       RayConfig::instance().worker_cap_initial_backoff_delay_ms(),

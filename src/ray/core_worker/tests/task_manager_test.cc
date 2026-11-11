@@ -333,10 +333,18 @@ TEST_F(TaskManagerTest, TestRecordMetrics) {
   manager_.AddPendingTask(caller_address, spec, "");
   manager_.RecordMetrics();
   auto tag_to_value = fake_task_by_state_counter_.GetTagToValue();
-  ASSERT_EQ(tag_to_value.size(), 1);  // one task state data point
-  ASSERT_EQ(tag_to_value.begin()->first.at("State"),
-            rpc::TaskStatus_Name(rpc::TaskStatus::PENDING_ARGS_AVAIL));
-  ASSERT_EQ(tag_to_value.begin()->second, 1);  // one task in the PENDING_ARGS_AVAIL state
+  // Every task state has an explicit 0 placeholder (13 states x 2 IsRetry
+  // values, #47616). The task in this test has an empty name, so its live data
+  // point shares the placeholder's tag set and the live value must win.
+  ASSERT_EQ(tag_to_value.size(), 26);
+  for (const auto &[tags, value] : tag_to_value) {
+    if (tags.at("State") == rpc::TaskStatus_Name(rpc::TaskStatus::PENDING_ARGS_AVAIL) &&
+        tags.at("IsRetry") == "0") {
+      ASSERT_EQ(value, 1);  // one task in the PENDING_ARGS_AVAIL state
+    } else {
+      ASSERT_EQ(value, 0);
+    }
+  }
   manager_.FailPendingTask(spec.TaskId(), rpc::ErrorType::WORKER_DIED);
 }
 
@@ -349,13 +357,21 @@ TEST_F(TaskManagerTest, TestRecordMetricsReEmitsAcrossTicksWithoutTransitions) {
   auto spec = CreateTaskHelper(1, {});
   manager_.AddPendingTask(caller_address, spec, "");
 
-  // First tick emits PENDING_ARGS_AVAIL=1 for the new task.
+  // First tick emits PENDING_ARGS_AVAIL=1 for the new task, plus the explicit
+  // 0 placeholders for every other state (13 states x 2 IsRetry values,
+  // #47616). The task here has an empty name, so its data point shares the
+  // placeholder's tag set and the live value must win.
   manager_.RecordMetrics();
   auto first_tick = fake_task_by_state_counter_.GetTagToValue();
-  ASSERT_EQ(first_tick.size(), 1);
-  ASSERT_EQ(first_tick.begin()->first.at("State"),
-            rpc::TaskStatus_Name(rpc::TaskStatus::PENDING_ARGS_AVAIL));
-  ASSERT_EQ(first_tick.begin()->second, 1);
+  ASSERT_EQ(first_tick.size(), 26);
+  for (const auto &[tags, value] : first_tick) {
+    if (tags.at("State") == rpc::TaskStatus_Name(rpc::TaskStatus::PENDING_ARGS_AVAIL) &&
+        tags.at("IsRetry") == "0") {
+      ASSERT_EQ(value, 1);
+    } else {
+      ASSERT_EQ(value, 0);
+    }
+  }
 
   // Clear observations to detect re-emission.
   fake_task_by_state_counter_.Clear();
@@ -365,7 +381,7 @@ TEST_F(TaskManagerTest, TestRecordMetricsReEmitsAcrossTicksWithoutTransitions) {
   // re-asserted rather than dropping out of the gauge.
   manager_.RecordMetrics();
   auto second_tick = fake_task_by_state_counter_.GetTagToValue();
-  ASSERT_EQ(second_tick.size(), 1) << "pending task must persist without a transition";
+  ASSERT_EQ(second_tick.size(), 26) << "pending task must persist without a transition";
   ASSERT_EQ(second_tick, first_tick);
 
   // Failing the task drops it out of PENDING_ARGS_AVAIL. On the next tick the gauge
@@ -381,6 +397,31 @@ TEST_F(TaskManagerTest, TestRecordMetricsReEmitsAcrossTicksWithoutTransitions) {
     }
   }
   ASSERT_EQ(pending_args_avail, 0) << "gauge must be retracted to 0 after the task fails";
+}
+
+// Every (State, IsRetry) combination must have an explicit 0 sample from the
+// first tick, before any task exists (#47616): Prometheus's rate() does not
+// count a series' first increase when the series starts with no sample. The
+// placeholders use an empty Name because task names are unknown at startup.
+TEST_F(TaskManagerTest, TestRecordMetricsEmitsZeroForEveryTaskState) {
+  manager_.RecordMetrics();
+  auto tag_to_value = fake_task_by_state_counter_.GetTagToValue();
+  // 13 states in kAllNonNilTaskStates (rpc::TaskStatus excluding NIL) x 2
+  // IsRetry values. Update kAllNonNilTaskStates in task_manager.cc if this
+  // count changes.
+  ASSERT_EQ(tag_to_value.size(), 26);
+  std::unordered_set<std::string> states;
+  for (const auto &[tags, value] : tag_to_value) {
+    EXPECT_EQ(tags.size(), 4);
+    EXPECT_EQ(tags.at("Name"), "");
+    EXPECT_EQ(tags.at("Source"), "owner");
+    EXPECT_EQ(value, 0);
+    states.insert(tags.at("State"));
+  }
+  EXPECT_EQ(states.size(), 13);
+  EXPECT_EQ(states.count(rpc::TaskStatus_Name(rpc::TaskStatus::FAILED)), 1);
+  EXPECT_EQ(states.count(rpc::TaskStatus_Name(rpc::TaskStatus::FINISHED)), 1);
+  EXPECT_EQ(states.count(rpc::TaskStatus_Name(rpc::TaskStatus::RUNNING)), 1);
 }
 
 TEST_F(TaskManagerTest, TestTaskSuccess) {

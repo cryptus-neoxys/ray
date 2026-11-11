@@ -39,6 +39,25 @@ constexpr int64_t kTaskFailureThrottlingThreshold = 50;
 // Throttle task failure logs to once this interval.
 constexpr int64_t kTaskFailureLoggingFrequencyMillis = 5000;
 
+// Every task state the owner side can report, excluding NIL. Used to emit an
+// explicit 0 for each state at startup (#47616). Keep in sync with the
+// TaskStatus enum in src/ray/protobuf/common.proto.
+constexpr rpc::TaskStatus kAllNonNilTaskStates[] = {
+    rpc::TaskStatus::PENDING_ARGS_AVAIL,
+    rpc::TaskStatus::PENDING_NODE_ASSIGNMENT,
+    rpc::TaskStatus::PENDING_OBJ_STORE_MEM_AVAIL,
+    rpc::TaskStatus::PENDING_ARGS_FETCH,
+    rpc::TaskStatus::SUBMITTED_TO_WORKER,
+    rpc::TaskStatus::PENDING_ACTOR_TASK_ARGS_FETCH,
+    rpc::TaskStatus::PENDING_ACTOR_TASK_ORDERING_OR_CONCURRENCY,
+    rpc::TaskStatus::RUNNING,
+    rpc::TaskStatus::RUNNING_IN_RAY_GET,
+    rpc::TaskStatus::RUNNING_IN_RAY_WAIT,
+    rpc::TaskStatus::GETTING_AND_PINNING_ARGS,
+    rpc::TaskStatus::FINISHED,
+    rpc::TaskStatus::FAILED,
+};
+
 // Retry reason for a task resubmitted to recover a lost object it created.
 constexpr char kLineageReconstructionRetryReason[] = "LINEAGE_RECONSTRUCTION";
 
@@ -2213,10 +2232,22 @@ void TaskManager::RecordMetrics() {
   // drop out of the gauge. FlushOnChangeCallbacks still emits the final 0 for
   // keys that just dropped to zero (erased from the counter, so ForEachEntry
   // won't visit them).
+  // The zero placeholders go first: a task with an empty function name shares
+  // the placeholder's tag set, and the backend keeps the last value recorded
+  // within a tick, so the live value must be recorded after the placeholder.
+  RecordZeroForAllTaskStates();
   task_counter_.FlushOnChangeCallbacks();
   task_counter_.ForEachEntry(
       [this](const std::tuple<std::string, rpc::TaskStatus, bool> &key, int64_t value)
           ABSL_EXCLUSIVE_LOCKS_REQUIRED(&mu_) { RecordTaskState(key, value); });
+}
+
+void TaskManager::RecordZeroForAllTaskStates() {
+  for (rpc::TaskStatus state : kAllNonNilTaskStates) {
+    for (bool is_retry : {false, true}) {
+      RecordTaskState({std::string(), state, is_retry}, /*value=*/0);
+    }
+  }
 }
 
 void TaskManager::RecordTaskRetrySubmission(const TaskSpecification &spec,

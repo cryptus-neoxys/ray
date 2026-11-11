@@ -739,6 +739,21 @@ class TaskManager : public TaskManagerInterface {
                        int64_t value) ABSL_EXCLUSIVE_LOCKS_REQUIRED(&mu_);
 
   /**
+   * Records an explicit 0 for every task state (rpc::TaskStatus excluding NIL)
+   * and both IsRetry values, with an empty Name, so each combination has a
+   * sample from the first metrics tick (#47616). Prometheus's rate() does not
+   * count a series' first increase when the series has no earlier sample. The
+   * Name label of a real task is not known at startup, so the placeholders use
+   * an empty Name; queries that aggregate over Name (e.g. sum by (State))
+   * are continuous from startup. Called every tick because the metrics backend
+   * clears gauge observations after each export (#56405). Must be called before
+   * the live keys are re-asserted: a task with an empty function name shares
+   * the placeholder's tag set, and the backend keeps the last value recorded
+   * within a tick.
+   */
+  void RecordZeroForAllTaskStates() ABSL_EXCLUSIVE_LOCKS_REQUIRED(&mu_);
+
+  /**
    * Records one resubmission of a task this worker owns.
    *
    * \param spec The spec of the task being resubmitted.

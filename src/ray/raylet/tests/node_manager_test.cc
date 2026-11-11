@@ -553,6 +553,27 @@ class NodeManagerTest : public ::testing::Test {
       fake_node_manager_unexpected_worker_failure_total_count_;
 };
 
+// The eviction counter must emit an explicit 0 for each label combination with
+// fixed values at construction (#47616), so Prometheus's rate() does not drop
+// the first increase of those series. Task and actor eviction series are
+// labeled with the task name, which is not known at startup, so they cannot be
+// initialized here.
+TEST_F(NodeManagerTest, TestWorkerEvictionMetricInitializedToZero) {
+  auto tag_to_value = fake_memory_manager_worker_eviction_total_count_.GetTagToValue();
+  ASSERT_EQ(tag_to_value.size(), 2);
+  for (const auto &[tags, value] : tag_to_value) {
+    EXPECT_EQ(tags.size(), 2);
+    EXPECT_EQ(value, 0);
+  }
+  // The label values must match the ones recorded on an actual eviction.
+  EXPECT_EQ(tag_to_value.at(
+                {{"Type", "MemoryManager.DriverEviction.Total"}, {"Name", "Driver"}}),
+            0);
+  EXPECT_EQ(tag_to_value.at({{"Type", "MemoryManager.IdleWorkerEviction.Total"},
+                             {"Name", "Idle Worker"}}),
+            0);
+}
+
 TEST_F(NodeManagerTest, HandleIsLocalWorkerDeadUnknownWorker) {
   WorkerID worker_id = WorkerID::FromRandom();
   // Both worker and driver lookups return nullptr (the fake's defaults).
